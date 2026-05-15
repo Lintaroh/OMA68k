@@ -1,0 +1,347 @@
+ AS V1.42 Beta [Bld 278] - Source File mandelbrot.asm - Page 1 - 5/14/2026 21:53:32
+
+
+    1/       0 :                        ;;; ============================================================
+    2/       0 :                        ;;;   mandelbrot.asm  -  Mandelbrot Set ASCII Art
+    3/       0 :                        ;;;   MC68008/68000  Fixed-Point 4.12  (1.0 = 4096 = $1000)
+    4/       0 :                        ;;;
+    5/       0 :                        ;;;   Size   : 72 cols x 44 rows
+    6/       0 :                        ;;;   Real   : -2.3 .. +0.9
+    7/       0 :                        ;;;   Imag   : -1.15 .. +1.15
+    8/       0 :                        ;;;   MaxIter: 64
+    9/       0 :                        ;;;   Palette: 48-char gradient  ' ' -> dense -> '@' (inside)
+   10/       0 :                        ;;;
+   11/       0 :                        ;;;   Monitor I/O  (from Monitor/unimon_68000.lst):
+   12/       0 :                        ;;;     CONOUT = $0008141A
+   13/       0 :                        ;;;     CONIN  = $000813FA
+   14/       0 :                        ;;;     CONST  = $0008140E
+   15/       0 :                        ;;; ============================================================
+   16/       0 :                        
+   17/       0 :                                CPU     68000
+   18/       0 :                                SUPMODE ON
+   19/       0 :                        
+   20/       0 :                        ;;; ---- Monitor entry points --------------------------------
+   21/       0 : =$8141A                CONOUT  EQU     $8141A
+   22/       0 : =$813FA                CONIN   EQU     $813FA
+   23/       0 : =$8140E                CONST   EQU     $8140E
+   24/       0 :                        
+   25/       0 :                        ;;; ---- Fixed-point constants  (4.12, 1.0 = 4096) ----------
+   26/       0 :                        ;;;  X: -2.3*4096 = -9421  .. +0.9*4096 = 3686
+   27/       0 :                        ;;;     DX = (3686+9421)/72 = 182 per column
+   28/       0 :                        ;;;  Y: -1.15*4096 = -4710 .. +1.15*4096 = 4710
+   29/       0 :                        ;;;     DY = 9420/44 = 214 per row
+   30/       0 :                        ;;;  Escape: |Z|^2 > 4  =>  4*4096 = 16384 in 4.12
+   31/       0 : =$FFFFFFFFFFFFDB33     FP_XMN  EQU     -9421
+   32/       0 : =$B6                   FP_DX   EQU     182
+   33/       0 : =$FFFFFFFFFFFFED9A     FP_YMN  EQU     -4710
+   34/       0 : =$D6                   FP_DY   EQU     214
+   35/       0 : =$4000                 FP_ESC  EQU     16384
+   36/       0 :                        
+   37/       0 :                        ;;; ---- Image / iteration parameters -----------------------
+   38/       0 : =$48                   WIDTH   EQU     72
+   39/       0 : =$2C                   HEIGHT  EQU     44
+   40/       0 : =$40                   MAXITER EQU     64
+   41/       0 :                        
+   42/       0 :                        ;;; ---- Character palette length ---------------------------
+   43/       0 : =$30                   CLEN    EQU     48              ; number of chars in PALETTE
+   44/       0 :                        
+   45/       0 :                        ;;; ===========================================================
+   46/     400 :                                ORG     $00000400
+   47/     400 :                        
+   48/     400 :                        ;;; -----------------------------------------------------------
+   49/     400 :                        ;;; START
+   50/     400 :                        ;;; Register map (outer loops):
+   51/     400 :                        ;;;   D7.W  = row counter   (HEIGHT..1)
+   52/     400 :                        ;;;   D6.W  = CI            (imaginary coord, 4.12)
+   53/     400 :                        ;;;   D5.W  = col counter   (WIDTH..1)
+   54/     400 :                        ;;;   D4.W  = CR            (real coord, 4.12)
+   55/     400 :                        ;;;   A5    = base of PALETTE string
+   56/     400 :                        ;;; -----------------------------------------------------------
+   57/     400 :                        START:
+   58/     400 : 41F8 04E0                      LEA     MSG_HDR,A0
+   59/     404 : 6100 00CC                      BSR     STROUT
+   60/     408 :                        
+ AS V1.42 Beta [Bld 278] - Source File mandelbrot.asm - Page 2 - 5/14/2026 21:53:32
+
+
+   61/     408 : 4BF8 063C                      LEA     PALETTE,A5      ; A5 = palette base (constant)
+   62/     40C :                        
+   63/     40C : 3E3C 002C                      MOVE.W  #HEIGHT,D7
+   64/     410 : 3C3C ED9A                      MOVE.W  #FP_YMN,D6     ; CI starts at top (most negative)
+   65/     414 :                        
+   66/     414 :                        ROW_LOOP:
+   67/     414 : 3A3C 0048                      MOVE.W  #WIDTH,D5
+   68/     418 : 383C DB33                      MOVE.W  #FP_XMN,D4     ; CR starts at left
+   69/     41C :                        
+   70/     41C :                        COL_LOOP:
+   71/     41C :                                ;;; ------------------------------------------------
+   72/     41C :                                ;;; Mandelbrot inner loop
+   73/     41C :                                ;;; Calling convention: D4=CR D6=CI (untouched)
+   74/     41C :                                ;;; Work regs: D0 D1 D2 D3  (caller saves D4-D7 via stack)
+   75/     41C :                                ;;; Result: D0.W = escape iteration (0 = inside set)
+   76/     41C :                                ;;; ------------------------------------------------
+   77/     41C : 48E7 0F00                      MOVEM.L D4-D7,-(A7)    ; save outer-loop state
+   78/     420 :                        
+   79/     420 : 7000                           MOVEQ   #0,D0           ; ZR = 0 (4.12)
+   80/     422 : 7200                           MOVEQ   #0,D1           ; ZI = 0 (4.12)
+   81/     424 : 3404                           MOVE.W  D4,D2           ; D2 = CR  (will not change)
+   82/     426 : 3606                           MOVE.W  D6,D3           ; D3 = CI  (will not change)
+   83/     428 :                                ;;; D4 = iteration counter  (we just saved D4 on stack)
+   84/     428 : 383C 0040                      MOVE.W  #MAXITER,D4
+   85/     42C :                        
+   86/     42C :                                ;;; We need D5 as temp during iteration (saved on stack)
+   87/     42C :                                ;;; Register use inside ITER:
+   88/     42C :                                ;;;   D0 = ZR, D1 = ZI, D2 = CR, D3 = CI
+   89/     42C :                                ;;;   D4 = iterations remaining
+   90/     42C :                                ;;;   D5, D6, D7 = temporaries
+   91/     42C :                        
+   92/     42C :                        ITER:
+   93/     42C :                                ;;; ---- ZI_new = 2*ZR*ZI + CI -------------------------
+   94/     42C :                                ;;;  D5.L = ZR * ZI  (intermediate, scale^2 = 2^24)
+   95/     42C :                                ;;;  After ASR.L #11 => 2*ZR*ZI in 4.12 (shift 12-1)
+   96/     42C : 3A00                           MOVE.W  D0,D5
+   97/     42E : CBC1                           MULS.W  D1,D5           ; D5.L = ZR*ZI (4.12 * 4.12 = 8.24)
+   98/     430 : E085                           ASR.L   #8,D5           ; shift 11 = 8+3
+   99/     432 : E685                           ASR.L   #3,D5           ; D5.L = 2*ZR*ZI in 4.12
+  100/     434 : DA43                           ADD.W   D3,D5           ; D5.W = 2*ZR*ZI + CI  => ZI_new
+  101/     436 :                        
+  102/     436 :                                ;;; ---- ZR_new = ZR^2 - ZI^2 + CR --------------------
+  103/     436 :                                ;;;  D6.L = ZR^2,  D7.L = ZI^2
+  104/     436 : 3C00                           MOVE.W  D0,D6
+  105/     438 : CDC0                           MULS.W  D0,D6           ; D6.L = ZR^2 (8.24)
+  106/     43A : E086                           ASR.L   #8,D6           ; shift 12 = 8+4
+  107/     43C : E886                           ASR.L   #4,D6           ; D6.L = ZR^2 in 4.12
+  108/     43E :                        
+  109/     43E : 3E01                           MOVE.W  D1,D7
+  110/     440 : CFC1                           MULS.W  D1,D7           ; D7.L = ZI^2 (8.24)
+  111/     442 : E087                           ASR.L   #8,D7           ; shift 12 = 8+4
+  112/     444 : E887                           ASR.L   #4,D7           ; D7.L = ZI^2 in 4.12
+  113/     446 :                        
+  114/     446 : 9C47                           SUB.W   D7,D6           ; D6.W = ZR^2 - ZI^2
+  115/     448 : DC42                           ADD.W   D2,D6           ; D6.W = ZR^2 - ZI^2 + CR  => ZR_new
+  116/     44A :                        
+  117/     44A :                                ;;; ---- Escape check: |Z_new|^2 > 4 ------------------
+  118/     44A :                                ;;;  Reuse D7: ZR_new^2 + ZI_new^2  (both in 4.12)
+  119/     44A : 3E06                           MOVE.W  D6,D7
+  120/     44C : CFC6                           MULS.W  D6,D7           ; D7.L = ZR_new^2 (8.24)
+ AS V1.42 Beta [Bld 278] - Source File mandelbrot.asm - Page 3 - 5/14/2026 21:53:32
+
+
+  121/     44E : E087                           ASR.L   #8,D7
+  122/     450 : E887                           ASR.L   #4,D7           ; D7 = ZR_new^2 in 4.12
+  123/     452 :                        
+  124/     452 : 3005                           MOVE.W  D5,D0           ; D0 = ZI_new (temp)
+  125/     454 : C1C5                           MULS.W  D5,D0           ; D0.L = ZI_new^2 (8.24)
+  126/     456 : E080                           ASR.L   #8,D0
+  127/     458 : E880                           ASR.L   #4,D0           ; D0 = ZI_new^2 in 4.12
+  128/     45A :                        
+  129/     45A : DE40                           ADD.W   D0,D7           ; D7.W = |Z_new|^2 in 4.12
+  130/     45C :                        
+  131/     45C :                                ;;; ---- Update ZR, ZI for next iteration -------------
+  132/     45C : 3006                           MOVE.W  D6,D0           ; D0 = ZR_new
+  133/     45E : 3205                           MOVE.W  D5,D1           ; D1 = ZI_new
+  134/     460 :                        
+  135/     460 :                                ;;; ---- Check escape or exhaustion -------------------
+  136/     460 : BE7C 4000                      CMP.W   #FP_ESC,D7     ; |Z|^2 >= 4.0?
+  137/     464 : 6C08                           BGE.S   ESCAPED
+  138/     466 :                        
+  139/     466 : 5344                           SUBQ.W  #1,D4
+  140/     468 : 66C2                           BNE.S   ITER
+  141/     46A :                        
+  142/     46A :                                ;;; Inside set: D4=0
+  143/     46A : 7000                           MOVEQ   #0,D0           ; return 0 = inside
+  144/     46C : 6006                           BRA.S   ITER_DONE
+  145/     46E :                        
+  146/     46E :                        ESCAPED:
+  147/     46E :                                ;;; D4 = remaining iters.  Escaped at MAXITER - D4 + 1
+  148/     46E :                                ;;; We want "how many iters ran" = MAXITER - D4 + 1
+  149/     46E : 303C 0041                      MOVE.W  #MAXITER+1,D0
+  150/     472 : 9044                           SUB.W   D4,D0           ; D0 = iters taken (1..MAXITER)
+  151/     474 :                        
+  152/     474 :                        ITER_DONE:
+  153/     474 : 4CDF 00F0                      MOVEM.L (A7)+,D4-D7    ; restore outer-loop state
+  154/     478 :                        
+  155/     478 :                                ;;; ------------------------------------------------
+  156/     478 :                                ;;; Map D0 -> character and output
+  157/     478 :                                ;;; D0 = 0  => inside set => '@'
+  158/     478 :                                ;;; D0 = 1..MAXITER => palette[(D0-1)*(CLEN-1)/MAXITER]
+  159/     478 :                                ;;; ------------------------------------------------
+  160/     478 : 4A40                           TST.W   D0
+  161/     47A : 660C                           BNE.S   ESCAPED_PIXEL
+  162/     47C :                        
+  163/     47C : 103C 0040                      MOVE.B  #'@',D0
+  164/     480 : 4EB9 0008 141A                 JSR     CONOUT
+  165/     486 : 601A                           BRA.S   NEXT_COL
+  166/     488 :                        
+  167/     488 :                        ESCAPED_PIXEL:
+  168/     488 :                                ;;; index = (N-1) * (CLEN-1) / MAXITER
+  169/     488 :                                ;;; N in D0 (1..64), result 0..47
+  170/     488 : 5340                           SUBQ.W  #1,D0           ; N-1 (0..63)
+  171/     48A : C1FC 002F                      MULS.W  #CLEN-1,D0     ; D0.L = (N-1)*(CLEN-1)
+  172/     48E : 80FC 0040                      DIVU.W  #MAXITER,D0    ; D0.W = quotient
+  173/     492 : C0BC 0000 FFFF                 AND.L   #$0000FFFF,D0  ; keep quotient word
+  174/     498 : 1035 0000                      MOVE.B  (A5,D0.W),D0   ; lookup character
+  175/     49C : 4EB9 0008 141A                 JSR     CONOUT
+  176/     4A2 :                        
+  177/     4A2 :                        NEXT_COL:
+  178/     4A2 : D87C 00B6                      ADD.W   #FP_DX,D4      ; CR += step
+  179/     4A6 : 5345                           SUBQ.W  #1,D5
+  180/     4A8 : 6600 FF72                      BNE     COL_LOOP
+ AS V1.42 Beta [Bld 278] - Source File mandelbrot.asm - Page 4 - 5/14/2026 21:53:32
+
+
+  181/     4AC :                        
+  182/     4AC :                                ;;; CR/LF at end of row
+  183/     4AC : 103C 000D                      MOVE.B  #$0D,D0
+  184/     4B0 : 4EB9 0008 141A                 JSR     CONOUT
+  185/     4B6 : 103C 000A                      MOVE.B  #$0A,D0
+  186/     4BA : 4EB9 0008 141A                 JSR     CONOUT
+  187/     4C0 :                        
+  188/     4C0 : DC7C 00D6                      ADD.W   #FP_DY,D6      ; CI += step
+  189/     4C4 : 5347                           SUBQ.W  #1,D7
+  190/     4C6 : 6600 FF4C                      BNE     ROW_LOOP
+  191/     4CA :                        
+  192/     4CA :                                ;;; Done
+  193/     4CA : 41F8 05CD                      LEA     MSG_DONE,A0
+  194/     4CE : 6102                           BSR     STROUT
+  195/     4D0 : 4E75                           RTS
+  196/     4D2 :                        
+  197/     4D2 :                        ;;; -----------------------------------------------------------
+  198/     4D2 :                        ;;; STROUT: print null-terminated string pointed by A0
+  199/     4D2 :                        ;;;         clobbers D0
+  200/     4D2 :                        ;;; -----------------------------------------------------------
+  201/     4D2 :                        STROUT:
+  202/     4D2 : 1018                           MOVE.B  (A0)+,D0
+  203/     4D4 : 6708                           BEQ.S   STROUT_END
+  204/     4D6 : 4EB9 0008 141A                 JSR     CONOUT
+  205/     4DC : 60F4                           BRA.S   STROUT
+  206/     4DE :                        STROUT_END:
+  207/     4DE : 4E75                           RTS
+  208/     4E0 :                        
+  209/     4E0 :                        ;;; -----------------------------------------------------------
+  210/     4E0 :                        ;;; Data
+  211/     4E0 :                        ;;; -----------------------------------------------------------
+  212/     4E0 :                        
+  213/     4E0 :                        MSG_HDR:
+  214/     4E0 : 0D0A                           DC.B    $0D,$0A
+  215/     4E2 : 3D3D 3D3D 3D3D 3D3D            DC.B    "================================================",$0D,$0A
+           4EA : 3D3D 3D3D 3D3D 3D3D
+           4F2 : 3D3D 3D3D 3D3D 3D3D
+           4FA : 3D3D 3D3D 3D3D 3D3D
+           502 : 3D3D 3D3D 3D3D 3D3D
+           50A : 3D3D 3D3D 3D3D 3D3D
+           512 : 0D0A                  
+  216/     514 : 204D 414E 4445 4C42            DC.B    " MANDELBROT SET  -  ASCII ART  (68000 asm)",$0D,$0A
+           51C : 524F 5420 5345 5420
+           524 : 202D 2020 4153 4349
+           52C : 4920 4152 5420 2028
+           534 : 3638 3030 3020 6173
+           53C : 6D29 0D0A            
+  217/     540 : 2052 6561 6C3A 202D            DC.B    " Real: -2.30 .. +0.90  Imag: -1.15 .. +1.15",$0D,$0A
+           548 : 322E 3330 202E 2E20
+           550 : 2B30 2E39 3020 2049
+           558 : 6D61 673A 202D 312E
+           560 : 3135 202E 2E20 2B31
+           568 : 2E31 350D 0A         
+  218/     56D : 2053 697A 653A 2037            DC.B    " Size: 72x44  MaxIter: 64  Fixed-Point 4.12",$0D,$0A
+           575 : 3278 3434 2020 4D61
+           57D : 7849 7465 723A 2036
+           585 : 3420 2046 6978 6564
+           58D : 2D50 6F69 6E74 2034
+           595 : 2E31 320D 0A         
+  219/     59A : 3D3D 3D3D 3D3D 3D3D            DC.B    "================================================",$0D,$0A
+ AS V1.42 Beta [Bld 278] - Source File mandelbrot.asm - Page 5 - 5/14/2026 21:53:32
+
+
+           5A2 : 3D3D 3D3D 3D3D 3D3D
+           5AA : 3D3D 3D3D 3D3D 3D3D
+           5B2 : 3D3D 3D3D 3D3D 3D3D
+           5BA : 3D3D 3D3D 3D3D 3D3D
+           5C2 : 3D3D 3D3D 3D3D 3D3D
+           5CA : 0D0A                  
+  220/     5CC : 00                             DC.B    $00
+  221/     5CD :                        
+  222/     5CD :                        MSG_DONE:
+  223/     5CD : 0D0A                           DC.B    $0D,$0A
+  224/     5CF : 3D3D 3D3D 3D3D 3D3D            DC.B    "================================================",$0D,$0A
+           5D7 : 3D3D 3D3D 3D3D 3D3D
+           5DF : 3D3D 3D3D 3D3D 3D3D
+           5E7 : 3D3D 3D3D 3D3D 3D3D
+           5EF : 3D3D 3D3D 3D3D 3D3D
+           5F7 : 3D3D 3D3D 3D3D 3D3D
+           5FF : 0D0A                  
+  225/     601 : 2044 6F6E 652E 0D0A            DC.B    " Done.",$0D,$0A
+  226/     609 : 3D3D 3D3D 3D3D 3D3D            DC.B    "================================================",$0D,$0A
+           611 : 3D3D 3D3D 3D3D 3D3D
+           619 : 3D3D 3D3D 3D3D 3D3D
+           621 : 3D3D 3D3D 3D3D 3D3D
+           629 : 3D3D 3D3D 3D3D 3D3D
+           631 : 3D3D 3D3D 3D3D 3D3D
+           639 : 0D0A                  
+  227/     63B : 00                             DC.B    $00
+  228/     63C :                        
+  229/     63C :                        ;;; 48-char gradient palette: index 0 = fast escape (sparse)
+  230/     63C :                        ;;;                           index 47 = slow escape (dense border)
+  231/     63C :                        PALETTE:
+  232/     63C : 202E 6027 2C2D 5F3A            DC.B    " .`',-_:;+|i!rnczuvxXYUJCLQ0OZmwqpdbkhao*#%MW&8B"
+           644 : 3B2B 7C69 2172 6E63
+           64C : 7A75 7678 5859 554A
+           654 : 434C 5130 4F5A 6D77
+           65C : 7170 6462 6B68 616F
+           664 : 2A23 254D 5726 3842   
+  233/     66C :                                ;       0         1         2         3         4
+  234/     66C :                                ;       0123456789012345678901234567890123456789012345678
+  235/     66C :                        
+  236/     66C :                                ALIGN   2
+  237/     66C :                        
+  238/     66C :                                END     START
+ AS V1.42 Beta [Bld 278] - Source File mandelbrot.asm - Page 6 - 5/14/2026 21:53:32
+
+
+  Symbol Table (* = unused):
+  --------------------------
+
+*ARCHITECTURE :                                        "i386-unknown-win32" - |
+*CASESENSITIVE :                  0 - |  CLEN :                          30 - |
+ COL_LOOP :                     41C C | *CONIN :                      813FA - |
+ CONOUT :                     8141A - | *CONST :                      8140E - |
+*CONSTPI :        3.141592653589793 - | *DATE :                 "5/14/2026" - |
+ ESCAPED :                      46E C |  ESCAPED_PIXEL :                488 C |
+*FALSE :                          0 - | *FLOATMAX :      1.797693134866E308 - |
+ FP_DX :                         B6 - |  FP_DY :                         D6 - |
+ FP_ESC :                      4000 - |  FP_XMN :          FFFFFFFFFFFFDB33 - |
+ FP_YMN :          FFFFFFFFFFFFED9A - | *FULLPMMU :                       1 - |
+*HAS64 :                          1 - | *HASFPU :                         0 - |
+*HASPMMU :                        0 - |  HEIGHT :                        2C - |
+*INSUPMODE :                      1 - |  ITER :                         42C C |
+ ITER_DONE :                    474 C | *LISTON :                         1 - |
+*MACEXP :                         7 - |  MAXITER :                       40 - |
+*MOMCPU :                     68000 - | *MOMCPUNAME :               "68000" - |
+ MSG_DONE :                     5CD C |  MSG_HDR :                      4E0 C |
+*NESTMAX :                      100 - |  NEXT_COL :                     4A2 C |
+*PADDING :                        1 - |  PALETTE :                      63C C |
+*RELAXED :                        0 - |  ROW_LOOP :                     414 C |
+ START :                        400 C |  STROUT :                       4D2 C |
+ STROUT_END :                   4DE C | *TIME :                  "21:53:32" - |
+*TRUE :                           1 - | *VERSION :                     142F - |
+ WIDTH :                         48 - |
+
+     46 symbols
+     23 unused symbols
+
+ AS V1.42 Beta [Bld 278] - Source File mandelbrot.asm - Page 7 - 5/14/2026 21:53:32
+
+
+  Code Pages:
+  ----------
+
+STANDARD (0 changed characters)
+
+1 code page
+
+0.07 seconds assembly time
+
+    239 lines source file
+      4 passes
+      0 errors
+      0 warnings

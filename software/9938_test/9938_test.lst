@@ -1,0 +1,189 @@
+ AS V1.42 Beta [Bld 278] - Source File 9938_test.asm - Page 1 - 5/13/2026 22:41:14
+
+
+    1/       0 :                        	CPU	68000
+    2/       0 :                        
+    3/       0 :                        ;;;
+    4/       0 :                        ;;; Universal Monitor "BIOS" Call Addresses
+    5/       0 :                        ;;;
+    6/       0 : =$813B4                CONIN	EQU	$813B4		; Read 1 character from console to D0.B
+    7/       0 : =$813D4                CONOUT	EQU	$813D4		; Write 1 character in D0.B to console
+    8/       0 : =$80752                STROUT	EQU	$80752		; Print string pointed by A0 (null-terminated)
+    9/       0 : =$807C6                CRLF	EQU	$807C6		; Print CR/LF
+   10/       0 : =$80770                HEXOUT2	EQU	$80770		; Print D0.B as 2-digit hex
+   11/       0 : =$80768                HEXOUT4	EQU	$80768		; Print D0.W as 4-digit hex
+   12/       0 : =$80760                HEXOUT8	EQU	$80760		; Print D0.L as 8-digit hex
+   13/       0 :                        
+   14/       0 :                        ;;;
+   15/       0 :                        ;;; V9938 Address Mapping
+   16/       0 :                        ;;; (000A0000hからマッピングされているとのこと)
+   17/       0 :                        ;;;
+   18/       0 : =$A0000                VDP_BASE	EQU	$0A0000
+   19/       0 :                        
+   20/     400 :                        	ORG	$000400
+   21/     400 :                        
+   22/     400 :                        START:
+   23/     400 :                        	;; タイトルメッセージ出力
+   24/     400 : 41F8 04A6              	LEA	MSG_START,A0
+   25/     404 : 4EB9 0008 0752         	JSR	STROUT
+   26/     40A :                        
+   27/     40A :                        	;; 1. VDP空間(A00000 - A0000F)の16バイトダンプ
+   28/     40A :                        	;; (Even/Oddどちらにマッピングされていても読み出せるようにするため)
+   29/     40A : 41F8 04C2              	LEA	MSG_DUMP,A0
+   30/     40E : 4EB9 0008 0752         	JSR	STROUT
+   31/     414 : 227C 000A 0000         	MOVE.L	#VDP_BASE,A1
+   32/     41A : 323C 000F              	MOVE.W	#15,D1
+   33/     41E :                        DUMP_LOOP:
+   34/     41E : 1019                   	MOVE.B	(A1)+,D0
+   35/     420 : 4EB9 0008 0770         	JSR	HEXOUT2
+   36/     426 : 103C 0020              	MOVE.B	#' ',D0
+   37/     42A : 4EB9 0008 13D4         	JSR	CONOUT
+   38/     430 : 51C9 FFEC              	DBRA	D1,DUMP_LOOP
+   39/     434 : 4EB9 0008 07C6         	JSR	CRLF
+   40/     43A :                        
+   41/     43A :                        	;; 2. VBlankステータスリードテスト
+   42/     43A :                        	;; V9938はPort 1 (Command Port)を読むと、Status Register 0が読めます。
+   43/     43A :                        	;; bit 7にV-Blankフラグがあり、約1/60秒ごとに1になり、読むと0クリアされます。
+   44/     43A :                        	;; データバスが逆順なら bit 0 に現れる可能性があります。
+   45/     43A :                        	;; ここでは、Even($A0002)とOdd($A0003)の両方のポートを少しの間監視し、
+   46/     43A :                        	;; 値が変化したら出力します。
+   47/     43A :                        	
+   48/     43A :                        	;; --- Even側の監視 ($A0002) ---
+   49/     43A : 41F8 04DE              	LEA	MSG_STAT_EVEN,A0
+   50/     43E : 4EB9 0008 0752         	JSR	STROUT
+   51/     444 : 227C 000A 0002         	MOVE.L	#$0A0002,A1
+   52/     44A : 611E                   	BSR	MONITOR_PORT
+   53/     44C :                        
+   54/     44C :                        	;; --- Odd側の監視 ($A0003) ---
+   55/     44C : 41F8 0503              	LEA	MSG_STAT_ODD,A0
+   56/     450 : 4EB9 0008 0752         	JSR	STROUT
+   57/     456 : 227C 000A 0003         	MOVE.L	#$0A0003,A1
+   58/     45C : 610C                   	BSR	MONITOR_PORT
+   59/     45E :                        
+   60/     45E :                        	;; テスト終了、モニタに制御を戻す (RTS)
+ AS V1.42 Beta [Bld 278] - Source File 9938_test.asm - Page 2 - 5/13/2026 22:41:14
+
+
+   61/     45E : 41F8 0527              	LEA	MSG_DONE,A0
+   62/     462 : 4EB9 0008 0752         	JSR	STROUT
+   63/     468 : 4E75                   	RTS
+   64/     46A :                        
+   65/     46A :                        ;;;
+   66/     46A :                        ;;; サブルーチン: A1で指定されたポートを一定回数読み、値が変わったら表示
+   67/     46A :                        ;;;
+   68/     46A :                        MONITOR_PORT:
+   69/     46A : 343C 0040              	MOVE.W	#64,D2		; 最大64回変化を検出、またはタイムアウトで抜ける
+   70/     46E : 1611                   	MOVE.B	(A1),D3		; 初期値を読む
+   71/     470 : 383C 00C8              	MOVE.W	#200,D4		; タイムアウト用ループカウンタ
+   72/     474 :                        
+   73/     474 :                        MON_LOOP:
+   74/     474 :                        	;; 少しウェイトを入れる (1/60秒を跨ぐため)
+   75/     474 : 323C C350              	MOVE.W	#50000,D1
+   76/     478 :                        WAIT_LOOP:
+   77/     478 : 4E71                   	NOP
+   78/     47A : 51C9 FFFC              	DBRA	D1,WAIT_LOOP
+   79/     47E :                        
+   80/     47E : 1011                   	MOVE.B	(A1),D0		; ポートを読む
+   81/     480 : B600                   	CMP.B	D0,D3		; 前回の値と比較
+   82/     482 : 6716                   	BEQ	MON_NEXT	; 変化なしなら次へ
+   83/     484 :                        
+   84/     484 :                        	;; 値が変化した！
+   85/     484 : 1600                   	MOVE.B	D0,D3		; 新しい値を保存
+   86/     486 : 4EB9 0008 0770         	JSR	HEXOUT2		; 変化した値を表示
+   87/     48C : 103C 0020              	MOVE.B	#' ',D0
+   88/     490 : 4EB9 0008 13D4         	JSR	CONOUT
+   89/     496 :                        
+   90/     496 : 5342                   	SUBQ.W	#1,D2
+   91/     498 : 6704                   	BEQ	MON_END		; 64回変化したら終わり
+   92/     49A :                        
+   93/     49A :                        MON_NEXT:
+   94/     49A : 51CC FFD8              	DBRA	D4,MON_LOOP	; タイムアウトまでループ
+   95/     49E :                        
+   96/     49E :                        MON_END:
+   97/     49E : 4EB9 0008 07C6         	JSR	CRLF
+   98/     4A4 : 4E75                   	RTS
+   99/     4A6 :                        
+  100/     4A6 :                        ;;;
+  101/     4A6 :                        ;;; Data Area
+  102/     4A6 :                        ;;;
+  103/     4A6 :                        MSG_START:
+  104/     4A6 : 2D2D 2D20 5639 3933    	DC.B	"--- V9938 Access Test ---", $0D, $0A, 0
+           4AE : 3820 4163 6365 7373
+           4B6 : 2054 6573 7420 2D2D
+           4BE : 2D0D 0A00            
+  105/     4C2 :                        MSG_DUMP:
+  106/     4C2 : 506F 7274 2044 756D    	DC.B	"Port Dump (A00000-A0000F): ", 0
+           4CA : 7020 2841 3030 3030
+           4D2 : 302D 4130 3030 3046
+           4DA : 293A 2000            
+  107/     4DE :                        MSG_STAT_EVEN:
+  108/     4DE : 4D6F 6E69 746F 7220    	DC.B	"Monitor Even Command Port (A00002): ", 0
+           4E6 : 4576 656E 2043 6F6D
+           4EE : 6D61 6E64 2050 6F72
+           4F6 : 7420 2841 3030 3030
+           4FE : 3229 3A20 00         
+  109/     503 :                        MSG_STAT_ODD:
+  110/     503 : 4D6F 6E69 746F 7220    	DC.B	"Monitor Odd Command Port (A00003): ", 0
+ AS V1.42 Beta [Bld 278] - Source File 9938_test.asm - Page 3 - 5/13/2026 22:41:14
+
+
+           50B : 4F64 6420 436F 6D6D
+           513 : 616E 6420 506F 7274
+           51B : 2028 4130 3030 3033
+           523 : 293A 2000            
+  111/     527 :                        MSG_DONE:
+  112/     527 : 5465 7374 2043 6F6D    	DC.B	"Test Complete. Return to Monitor.", $0D, $0A, 0
+           52F : 706C 6574 652E 2052
+           537 : 6574 7572 6E20 746F
+           53F : 204D 6F6E 6974 6F72
+           547 : 2E0D 0A00            
+  113/     54B :                        
+  114/     54B :                        	ALIGN 2
+  115/     54C :                        
+ AS V1.42 Beta [Bld 278] - Source File 9938_test.asm - Page 4 - 5/13/2026 22:41:14
+
+
+  Symbol Table (* = unused):
+  --------------------------
+
+*ARCHITECTURE :                                        "i386-unknown-win32" - |
+*CASESENSITIVE :                  0 - | *CONIN :                      813B4 - |
+ CONOUT :                     813D4 - | *CONSTPI :        3.141592653589793 - |
+ CRLF :                       807C6 - | *DATE :                 "5/13/2026" - |
+ DUMP_LOOP :                    41E C | *FALSE :                          0 - |
+*FLOATMAX :      1.797693134866E308 - | *FULLPMMU :                       1 - |
+*HAS64 :                          1 - | *HASFPU :                         0 - |
+*HASPMMU :                        0 - |  HEXOUT2 :                    80770 - |
+*HEXOUT4 :                    80768 - | *HEXOUT8 :                    80760 - |
+*INSUPMODE :                      0 - | *LISTON :                         1 - |
+*MACEXP :                         7 - | *MOMCPU :                     68000 - |
+*MOMCPUNAME :               "68000" - |  MONITOR_PORT :                 46A C |
+ MON_END :                      49E C |  MON_LOOP :                     474 C |
+ MON_NEXT :                     49A C |  MSG_DONE :                     527 C |
+ MSG_DUMP :                     4C2 C |  MSG_START :                    4A6 C |
+ MSG_STAT_EVEN :                4DE C |  MSG_STAT_ODD :                 503 C |
+*NESTMAX :                      100 - | *PADDING :                        1 - |
+*RELAXED :                        0 - | *START :                        400 C |
+ STROUT :                     80752 - | *TIME :                  "22:41:14" - |
+*TRUE :                           1 - |  VDP_BASE :                   A0000 - |
+*VERSION :                     142F - |  WAIT_LOOP :                    478 C |
+
+     41 symbols
+     25 unused symbols
+
+ AS V1.42 Beta [Bld 278] - Source File 9938_test.asm - Page 5 - 5/13/2026 22:41:14
+
+
+  Code Pages:
+  ----------
+
+STANDARD (0 changed characters)
+
+1 code page
+
+0.02 seconds assembly time
+
+    115 lines source file
+      2 passes
+      0 errors
+      0 warnings

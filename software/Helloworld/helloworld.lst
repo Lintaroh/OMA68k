@@ -1,0 +1,87 @@
+ AS V1.42 Beta [Bld 278] - Source File helloworld.asm - Page 1 - 5/10/2026 17:8:34
+
+
+    1/       0 :                        	CPU	68000
+    2/       0 :                        
+    3/       0 :                        ;;;
+    4/       0 :                        ;;; Universal Monitor "BIOS" Call Addresses
+    5/       0 :                        ;;;
+    6/       0 : =$813B4                CONIN	EQU	$813B4		; Read 1 character from console to D0.B
+    7/       0 : =$813D4                CONOUT	EQU	$813D4		; Write 1 character in D0.B to console
+    8/       0 : =$80752                STROUT	EQU	$80752		; Print string pointed by A0 (null-terminated)
+    9/       0 : =$807C6                CRLF	EQU	$807C6		; Print CR/LF
+   10/       0 : =$80770                HEXOUT2	EQU	$80770		; Print D0.B as 2-digit hex
+   11/       0 : =$80768                HEXOUT4	EQU	$80768		; Print D0.W as 4-digit hex
+   12/       0 : =$80760                HEXOUT8	EQU	$80760		; Print D0.L as 8-digit hex
+   13/       0 : =$807D6                GETLIN	EQU	$807D6		; Get line input from console
+   14/       0 :                        
+   15/       0 :                        ;;;
+   16/       0 :                        ;;; User Program Area (RAM starts at $000000, 500KiB available)
+   17/       0 :                        ;;; We start from $000400 to avoid clobbering the exception vectors (0x0-0x3FF)
+   18/       0 :                        ;;;
+   19/     400 :                        	ORG	$000400
+   20/     400 :                        
+   21/     400 :                        START:
+   22/     400 :                        	;; --- ここからコードを書き始められます ---
+   23/     400 :                        
+   24/     400 :                        LOOP:
+   25/     400 :                        	;; "Hello, 68000 World!" を無限に表示し続ける
+   26/     400 : 41F8 040C              	LEA	MSG_HELLO,A0
+   27/     404 : 4EB9 0008 0752         	JSR	STROUT
+   28/     40A :                        	
+   29/     40A :                        	;; 少しウェイトを入れる場合はここに遅延処理を書きます
+   30/     40A :                        	;; 今回はフルスピードで出力し続けます
+   31/     40A : 60F4                   	BRA	LOOP
+   32/     40C :                        
+   33/     40C :                        ;;;
+   34/     40C :                        ;;; Data Area
+   35/     40C :                        ;;;
+   36/     40C :                        MSG_HELLO:
+   37/     40C : 4865 6C6C 6F2C 2036    	DC.B	"Hello, 68000 World!", $0D, $0A, 0
+           414 : 3830 3030 2057 6F72
+           41C : 6C64 210D 0A00      
+   38/     422 :                        
+   39/     422 :                        
+ AS V1.42 Beta [Bld 278] - Source File helloworld.asm - Page 2 - 5/10/2026 17:8:34
+
+
+  Symbol Table (* = unused):
+  --------------------------
+
+*ARCHITECTURE :                                        "i386-unknown-win32" - |
+*CASESENSITIVE :                  0 - | *CONIN :                      813B4 - |
+*CONOUT :                     813D4 - | *CONSTPI :        3.141592653589793 - |
+*CRLF :                       807C6 - | *DATE :                 "5/10/2026" - |
+*FALSE :                          0 - | *FLOATMAX :      1.797693134866E308 - |
+*FULLPMMU :                       1 - | *GETLIN :                     807D6 - |
+*HAS64 :                          1 - | *HASFPU :                         0 - |
+*HASPMMU :                        0 - | *HEXOUT2 :                    80770 - |
+*HEXOUT4 :                    80768 - | *HEXOUT8 :                    80760 - |
+*INSUPMODE :                      0 - | *LISTON :                         1 - |
+ LOOP :                         400 C | *MACEXP :                         7 - |
+*MOMCPU :                     68000 - | *MOMCPUNAME :               "68000" - |
+ MSG_HELLO :                    40C C | *NESTMAX :                      100 - |
+*PADDING :                        1 - | *RELAXED :                        0 - |
+*START :                        400 C |  STROUT :                     80752 - |
+*TIME :                   "17:8:34" - | *TRUE :                           1 - |
+*VERSION :                     142F - |
+
+     32 symbols
+     29 unused symbols
+
+ AS V1.42 Beta [Bld 278] - Source File helloworld.asm - Page 3 - 5/10/2026 17:8:34
+
+
+  Code Pages:
+  ----------
+
+STANDARD (0 changed characters)
+
+1 code page
+
+0.02 seconds assembly time
+
+     39 lines source file
+      2 passes
+      0 errors
+      0 warnings

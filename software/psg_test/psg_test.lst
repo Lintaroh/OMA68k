@@ -1,0 +1,110 @@
+ AS V1.42 Beta [Bld 278] - Source File psg_test.asm - Page 1 - 5/10/2026 18:5:29
+
+
+    1/       0 :                        	CPU	68000
+    2/       0 :                        
+    3/       0 :                        ;;;
+    4/       0 :                        ;;; Universal Monitor "BIOS" Call Addresses
+    5/       0 :                        ;;;
+    6/       0 : =$813B4                CONIN	EQU	$813B4		; Read 1 character from console to D0.B
+    7/       0 : =$813D4                CONOUT	EQU	$813D4		; Write 1 character in D0.B to console
+    8/       0 : =$80752                STROUT	EQU	$80752		; Print string pointed by A0 (null-terminated)
+    9/       0 : =$807C6                CRLF	EQU	$807C6		; Print CR/LF
+   10/       0 : =$80770                HEXOUT2	EQU	$80770		; Print D0.B as 2-digit hex
+   11/       0 : =$80768                HEXOUT4	EQU	$80768		; Print D0.W as 4-digit hex
+   12/       0 : =$80760                HEXOUT8	EQU	$80760		; Print D0.L as 8-digit hex
+   13/       0 : =$807D6                GETLIN	EQU	$807D6		; Get line input from console
+   14/       0 :                        
+   15/       0 :                        ;;;
+   16/       0 :                        ;;; SN76489 PSG Address
+   17/       0 :                        ;;;
+   18/       0 : =$A2000                PSG_PORT	EQU	$0A2000
+   19/       0 :                        
+   20/       0 :                        ;;;
+   21/       0 :                        ;;; User Program Area (RAM starts at $000000, 500KiB available)
+   22/       0 :                        ;;; We start from $000400 to avoid clobbering the exception vectors (0x0-0x3FF)
+   23/       0 :                        ;;;
+   24/     400 :                        	ORG	$000400
+   25/     400 :                        
+   26/     400 :                        START:
+   27/     400 :                        	;; --- ここからコードを書き始められます ---
+   28/     400 :                        
+   29/     400 :                        
+   30/     400 :                        
+   31/     400 :                        	;; データバスが逆順(D7..D0 -> D0..D7)に配線されているため、
+   32/     400 :                        	;; 出力するデータはすべてビットを反転(MSB<->LSB)して送信します。
+   33/     400 :                        
+   34/     400 :                        	;; 全チャンネルを無音(ミュート)に初期化
+   35/     400 :                        	;; 元データ: $9F (10011111) -> 逆順: $F9 (11111001)
+   36/     400 : 13FC 00F9 000A 2000    	MOVE.B	#$F9, PSG_PORT	; Ch1 Vol = 15 (OFF)
+   37/     408 :                        	;; 元データ: $BF (10111111) -> 逆順: $FD (11111101)
+   38/     408 : 13FC 00FD 000A 2000    	MOVE.B	#$FD, PSG_PORT	; Ch2 Vol = 15 (OFF)
+   39/     410 :                        	;; 元データ: $DF (11011111) -> 逆順: $FB (11111011)
+   40/     410 : 13FC 00FB 000A 2000    	MOVE.B	#$FB, PSG_PORT	; Ch3 Vol = 15 (OFF)
+   41/     418 :                        	;; 元データ: $FF (11111111) -> 逆順: $FF (11111111)
+   42/     418 : 13FC 00FF 000A 2000    	MOVE.B	#$FF, PSG_PORT	; Noise Vol = 15 (OFF)
+   43/     420 :                        
+   44/     420 :                        	;; Ch1の周波数を設定 (例: 分周比 254 = $0FE -> 約440Hz / 3.58MHz時)
+   45/     420 :                        	;; コマンド: 1000(Ch1 Tone) + Freq下位4bit($E) = $8E (10001110)
+   46/     420 :                        	;; -> 逆順: $71 (01110001)
+   47/     420 : 13FC 0071 000A 2000    	MOVE.B	#$71, PSG_PORT
+   48/     428 :                        	;; コマンド: 0(データ) + Freq上位6bit($0F) = $0F (00001111)
+   49/     428 :                        	;; -> 逆順: $F0 (11110000)
+   50/     428 : 13FC 00F0 000A 2000    	MOVE.B	#$F0, PSG_PORT
+   51/     430 :                        
+   52/     430 :                        	;; Ch1のボリュームを最大に設定
+   53/     430 :                        	;; コマンド: 1001(Ch1 Vol) + Vol($0:最大) = $90 (10010000)
+   54/     430 :                        	;; -> 逆順: $09 (00001001)
+   55/     430 : 13FC 0009 000A 2000    	MOVE.B	#$09, PSG_PORT
+   56/     438 :                        
+   57/     438 :                        LOOP:
+   58/     438 :                        	;; 無限ループ (音は鳴り続けます)
+   59/     438 : 60FE                   	BRA	LOOP
+   60/     43A :                        
+ AS V1.42 Beta [Bld 278] - Source File psg_test.asm - Page 2 - 5/10/2026 18:5:29
+
+
+   61/     43A :                        
+ AS V1.42 Beta [Bld 278] - Source File psg_test.asm - Page 3 - 5/10/2026 18:5:29
+
+
+  Symbol Table (* = unused):
+  --------------------------
+
+*ARCHITECTURE :                                        "i386-unknown-win32" - |
+*CASESENSITIVE :                  0 - | *CONIN :                      813B4 - |
+*CONOUT :                     813D4 - | *CONSTPI :        3.141592653589793 - |
+*CRLF :                       807C6 - | *DATE :                 "5/10/2026" - |
+*FALSE :                          0 - | *FLOATMAX :      1.797693134866E308 - |
+*FULLPMMU :                       1 - | *GETLIN :                     807D6 - |
+*HAS64 :                          1 - | *HASFPU :                         0 - |
+*HASPMMU :                        0 - | *HEXOUT2 :                    80770 - |
+*HEXOUT4 :                    80768 - | *HEXOUT8 :                    80760 - |
+*INSUPMODE :                      0 - | *LISTON :                         1 - |
+ LOOP :                         438 C | *MACEXP :                         7 - |
+*MOMCPU :                     68000 - | *MOMCPUNAME :               "68000" - |
+*NESTMAX :                      100 - | *PADDING :                        1 - |
+ PSG_PORT :                   A2000 - | *RELAXED :                        0 - |
+*START :                        400 C | *STROUT :                     80752 - |
+*TIME :                   "18:5:29" - | *TRUE :                           1 - |
+*VERSION :                     142F - |
+
+     32 symbols
+     30 unused symbols
+
+ AS V1.42 Beta [Bld 278] - Source File psg_test.asm - Page 4 - 5/10/2026 18:5:29
+
+
+  Code Pages:
+  ----------
+
+STANDARD (0 changed characters)
+
+1 code page
+
+0.00 seconds assembly time
+
+     61 lines source file
+      1 pass
+      0 errors
+      0 warnings

@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "MiniDIN")(type "KiCad")(uri "${KIPRJMOD}/MiniDIN.pretty")(options "")(descr ""))
+)
