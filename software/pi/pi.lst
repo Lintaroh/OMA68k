@@ -1,0 +1,589 @@
+ AS V1.42 Beta [Bld 278] - Source File pi.asm - Page 1 - 5/17/2026 18:55:24
+
+
+    1/       0 :                        ;;; ============================================================
+    2/       0 :                        ;;;   pi.asm  -  Infinite Pi Digit Generator (Spigot Algorithm)
+    3/       0 :                        ;;;   MC68008/68000
+    4/       0 :                        ;;;
+    5/       0 :                        ;;;   Streams decimal digits of pi to the serial console forever.
+    6/       0 :                        ;;;   Based on the unbounded spigot algorithm by Gibbons (2006),
+    7/       0 :                        ;;;   using the continued-fraction / LFT composition method.
+    8/       0 :                        ;;;
+    9/       0 :                        ;;;   Algorithm overview:
+   10/       0 :                        ;;;     Pi can be expressed as the composition of an infinite
+   11/       0 :                        ;;;     sequence of Moebius (linear fractional) transformations:
+   12/       0 :                        ;;;       T_k = ( k, 4*k+2, 0, 2*k+1 )   for k = 1, 2, 3, ...
+   13/       0 :                        ;;;
+   14/       0 :                        ;;;     We maintain a composed transformation Z = (q, r, s, t)
+   15/       0 :                        ;;;     starting from the identity (1, 0, 0, 1).
+   16/       0 :                        ;;;
+   17/       0 :                        ;;;     At each step:
+   18/       0 :                        ;;;       1. Extract a trial digit: d = floor( (3*q + r) / (3*s + t) )
+   19/       0 :                        ;;;          (safe estimate using floor( (q*3+r) / (s*3+t) ))
+   20/       0 :                        ;;;       2. Check safety:  d == floor( (4*q + r) / (4*s + t) ) ?
+   21/       0 :                        ;;;          (i.e. floor( (q*4+r) / (s*4+t) ))
+   22/       0 :                        ;;;       3. If safe:
+   23/       0 :                        ;;;            - Output digit d
+   24/       0 :                        ;;;            - Update Z by "consuming" the digit:
+   25/       0 :                        ;;;              Z' = ( 10*(q - d*s), 10*(r - d*t), s, t )
+   26/       0 :                        ;;;       4. If not safe:
+   27/       0 :                        ;;;            - "Produce" (compose) the next T_k into Z:
+   28/       0 :                        ;;;              Z' = ( q*k, q*(4*k+2) + r*(2*k+1),
+   29/       0 :                        ;;;                      s*k, s*(4*k+2) + t*(2*k+1) )
+   30/       0 :                        ;;;              then increment k.
+   31/       0 :                        ;;;
+   32/       0 :                        ;;;   All arithmetic uses 32-bit signed integers.
+   33/       0 :                        ;;;   When values overflow, the algorithm gracefully wraps and
+   34/       0 :                        ;;;   will produce incorrect digits eventually, but for a 68000
+   35/       0 :                        ;;;   with 32-bit MULS (16x16->32) this gives many correct digits.
+   36/       0 :                        ;;;
+   37/       0 :                        ;;;   To handle larger ranges, we use a software multiply
+   38/       0 :                        ;;;   routine (MUL32) that does full 32x32->32 multiplication.
+   39/       0 :                        ;;;
+   40/       0 :                        ;;;   Monitor I/O  (from Monitor/unimon_68000.lst):
+   41/       0 :                        ;;;     CONOUT = $0008141A   (D0.B = char to output)
+   42/       0 :                        ;;;     CONIN  = $000813FA   (returns D0.B = char)
+   43/       0 :                        ;;;     CONST  = $0008140E   (D0.B != 0 if key pressed)
+   44/       0 :                        ;;;     STROUT = $0008079E   (A0 = ptr to null-terminated string)
+   45/       0 :                        ;;;     CRLF   = $00080812   (outputs CR+LF)
+   46/       0 :                        ;;; ============================================================
+   47/       0 :                        
+   48/       0 :                                CPU     68000
+   49/       0 :                                SUPMODE ON
+   50/       0 :                        
+   51/       0 :                        ;;; ---- Monitor entry points --------------------------------
+   52/       0 : =$8141A                CONOUT  EQU     $8141A
+   53/       0 : =$813FA                CONIN   EQU     $813FA
+   54/       0 : =$8140E                CONST   EQU     $8140E
+   55/       0 : =$8079E                STROUT  EQU     $8079E
+   56/       0 : =$80812                CRLF    EQU     $80812
+   57/       0 :                        
+   58/       0 :                        ;;; ---- RAM work area ----------------------------------------
+   59/       0 :                        ;;; We place our variables in low RAM, after the program code.
+   60/       0 :                        ;;; The LFT state (q, r, s, t) and counter k are kept in RAM.
+ AS V1.42 Beta [Bld 278] - Source File pi.asm - Page 2 - 5/17/2026 18:55:24
+
+
+   61/       0 :                        
+   62/       0 :                        ;;; ---- Constants -------------------------------------------
+   63/       0 : =$40                   DIGITS_PER_LINE EQU  64         ; digits per output line
+   64/       0 : =$A                    DIGITS_PER_GRP  EQU  10         ; digits per group (space separator)
+   65/       0 :                        
+   66/       0 :                        ;;; ===========================================================
+   67/     400 :                                ORG     $00000400
+   68/     400 :                        
+   69/     400 :                        ;;; -----------------------------------------------------------
+   70/     400 :                        ;;; START - Main entry point
+   71/     400 :                        ;;; -----------------------------------------------------------
+   72/     400 :                        START:
+   73/     400 : 41F8 0650                      LEA     MSG_HDR,A0
+   74/     404 : 4EB9 0008 079E                 JSR     STROUT
+   75/     40A :                        
+   76/     40A :                                ;; Initialize LFT state: Z = identity = (1, 0, 0, 1)
+   77/     40A : 21FC 0000 0001 0774            MOVE.L  #1,ZQ
+   78/     412 : 21FC 0000 0000 0778            MOVE.L  #0,ZR
+   79/     41A : 21FC 0000 0000 077C            MOVE.L  #0,ZS
+   80/     422 : 21FC 0000 0001 0780            MOVE.L  #1,ZT
+   81/     42A :                        
+   82/     42A :                                ;; k = 1 (continued fraction index)
+   83/     42A : 21FC 0000 0001 0784            MOVE.L  #1,KK
+   84/     432 :                        
+   85/     432 :                                ;; Digit counters
+   86/     432 : 42B8 0788                      CLR.L   DCNT            ; total digits output
+   87/     436 : 42B8 078C                      CLR.L   LCNT            ; digits on current line
+   88/     43A :                        
+   89/     43A :                                ;; Output "3." first digit is always 3 but let algorithm produce it
+   90/     43A :                                ;; Actually, let the algorithm produce all digits naturally.
+   91/     43A :                        
+   92/     43A :                        ;;; -----------------------------------------------------------
+   93/     43A :                        ;;; MAIN_LOOP - Produce digits of pi one at a time
+   94/     43A :                        ;;; -----------------------------------------------------------
+   95/     43A :                        MAIN_LOOP:
+   96/     43A :                                ;; Step 1: Extract trial digit d = floor((3*q + r) / (3*s + t))
+   97/     43A :                                ;;
+   98/     43A :                                ;; Compute numerator: 3*q + r
+   99/     43A : 2038 0774                      MOVE.L  ZQ,D0
+  100/     43E : 2200                           MOVE.L  D0,D1
+  101/     440 : D080                           ADD.L   D0,D0           ; D0 = 2*q
+  102/     442 : D081                           ADD.L   D1,D0           ; D0 = 3*q
+  103/     444 : D0B8 0778                      ADD.L   ZR,D0           ; D0 = 3*q + r  (numerator for extract)
+  104/     448 : 2F00                           MOVE.L  D0,-(A7)        ; save numerator on stack
+  105/     44A :                        
+  106/     44A :                                ;; Compute denominator: 3*s + t
+  107/     44A : 2238 077C                      MOVE.L  ZS,D1
+  108/     44E : 2401                           MOVE.L  D1,D2
+  109/     450 : D281                           ADD.L   D1,D1           ; D1 = 2*s
+  110/     452 : D282                           ADD.L   D2,D1           ; D1 = 3*s
+  111/     454 : D2B8 0780                      ADD.L   ZT,D1           ; D1 = 3*s + t  (denominator)
+  112/     458 :                        
+  113/     458 :                                ;; D0 = numerator, D1 = denominator
+  114/     458 :                                ;; Compute floor division: D0 / D1 -> D0 (quotient)
+  115/     458 : 201F                           MOVE.L  (A7)+,D0        ; restore numerator
+  116/     45A : 6100 0190                      BSR     SDIV32          ; D0 = floor(D0 / D1)
+  117/     45E : 2600                           MOVE.L  D0,D3           ; D3 = trial digit d
+  118/     460 :                        
+  119/     460 :                                ;; Step 2: Check safety
+  120/     460 :                                ;; d_check = floor((4*q + r) / (4*s + t))
+ AS V1.42 Beta [Bld 278] - Source File pi.asm - Page 3 - 5/17/2026 18:55:24
+
+
+  121/     460 : 2038 0774                      MOVE.L  ZQ,D0
+  122/     464 : E588                           LSL.L   #2,D0           ; D0 = 4*q
+  123/     466 : D0B8 0778                      ADD.L   ZR,D0           ; D0 = 4*q + r
+  124/     46A :                        
+  125/     46A : 2238 077C                      MOVE.L  ZS,D1
+  126/     46E : E589                           LSL.L   #2,D1           ; D1 = 4*s
+  127/     470 : D2B8 0780                      ADD.L   ZT,D1           ; D1 = 4*s + t
+  128/     474 :                        
+  129/     474 : 6100 0176                      BSR     SDIV32          ; D0 = floor((4*q+r) / (4*s+t))
+  130/     478 :                        
+  131/     478 : B083                           CMP.L   D3,D0           ; d_check == d ?
+  132/     47A : 6600 00AC                      BNE     PRODUCE         ; not safe -> compose next T_k
+  133/     47E :                        
+  134/     47E :                                ;; ---- Safe: output digit d and consume it ----
+  135/     47E :                        OUTPUT_DIGIT:
+  136/     47E :                                ;; Print the digit
+  137/     47E : 2003                           MOVE.L  D3,D0
+  138/     480 : D03C 0030                      ADD.B   #'0',D0         ; convert to ASCII
+  139/     484 : 4EB9 0008 141A                 JSR     CONOUT
+  140/     48A :                        
+  141/     48A :                                ;; Increment digit counters
+  142/     48A : 52B8 0788                      ADDQ.L  #1,DCNT
+  143/     48E : 52B8 078C                      ADDQ.L  #1,LCNT
+  144/     492 :                        
+  145/     492 :                                ;; After first digit, print decimal point
+  146/     492 : 0CB8 0000 0001 0788            CMP.L   #1,DCNT
+  147/     49A : 660C                           BNE.S   .no_point
+  148/     49C : 103C 002E                      MOVE.B  #'.',D0
+  149/     4A0 : 4EB9 0008 141A                 JSR     CONOUT
+  150/     4A6 : 601A                           BRA.S   .check_line
+  151/     4A8 :                        .no_point:
+  152/     4A8 :                                ;; Group separator (space every DIGITS_PER_GRP digits after decimal point)
+  153/     4A8 :                                ;; Actual position after decimal = DCNT - 1
+  154/     4A8 : 2038 0788                      MOVE.L  DCNT,D0
+  155/     4AC : 5380                           SUBQ.L  #1,D0           ; position after decimal point
+  156/     4AE : 80FC 000A                      DIVU.W  #DIGITS_PER_GRP,D0
+  157/     4B2 : 4840                           SWAP    D0              ; remainder in low word
+  158/     4B4 : 4A40                           TST.W   D0
+  159/     4B6 : 660A                           BNE.S   .check_line
+  160/     4B8 : 103C 0020                      MOVE.B  #' ',D0
+  161/     4BC : 4EB9 0008 141A                 JSR     CONOUT
+  162/     4C2 :                        
+  163/     4C2 :                        .check_line:
+  164/     4C2 :                                ;; Line break every DIGITS_PER_LINE digits (after decimal point)
+  165/     4C2 : 2038 0788                      MOVE.L  DCNT,D0
+  166/     4C6 : 5380                           SUBQ.L  #1,D0
+  167/     4C8 : 6710                           BEQ.S   .consume        ; don't break after "3."
+  168/     4CA : 80FC 0040                      DIVU.W  #DIGITS_PER_LINE,D0
+  169/     4CE : 4840                           SWAP    D0
+  170/     4D0 : 4A40                           TST.W   D0
+  171/     4D2 : 6606                           BNE.S   .consume
+  172/     4D4 : 4EB9 0008 0812                 JSR     CRLF
+  173/     4DA :                        
+  174/     4DA :                        .consume:
+  175/     4DA :                                ;; Consume digit: Z' = (10*(q - d*s), 10*(r - d*t), s, t)
+  176/     4DA :                                ;; new_q = 10 * (q - d * s)
+  177/     4DA : 2003                           MOVE.L  D3,D0           ; d
+  178/     4DC : 2238 077C                      MOVE.L  ZS,D1           ; s
+  179/     4E0 : 6100 00C8                      BSR     MUL32           ; D0 = d * s
+  180/     4E4 : 2238 0774                      MOVE.L  ZQ,D1
+ AS V1.42 Beta [Bld 278] - Source File pi.asm - Page 4 - 5/17/2026 18:55:24
+
+
+  181/     4E8 : 9280                           SUB.L   D0,D1           ; D1 = q - d*s
+  182/     4EA : 2001                           MOVE.L  D1,D0
+  183/     4EC : 223C 0000 000A                 MOVE.L  #10,D1
+  184/     4F2 : 6100 00B6                      BSR     MUL32           ; D0 = 10 * (q - d*s)
+  185/     4F6 : 21C0 0774                      MOVE.L  D0,ZQ
+  186/     4FA :                        
+  187/     4FA :                                ;; new_r = 10 * (r - d * t)
+  188/     4FA : 2003                           MOVE.L  D3,D0           ; d
+  189/     4FC : 2238 0780                      MOVE.L  ZT,D1           ; t
+  190/     500 : 6100 00A8                      BSR     MUL32           ; D0 = d * t
+  191/     504 : 2238 0778                      MOVE.L  ZR,D1
+  192/     508 : 9280                           SUB.L   D0,D1           ; D1 = r - d*t
+  193/     50A : 2001                           MOVE.L  D1,D0
+  194/     50C : 223C 0000 000A                 MOVE.L  #10,D1
+  195/     512 : 6100 0096                      BSR     MUL32           ; D0 = 10 * (r - d*t)
+  196/     516 : 21C0 0778                      MOVE.L  D0,ZR
+  197/     51A :                        
+  198/     51A :                                ;; s and t unchanged
+  199/     51A :                                ;; Check for key press to stop
+  200/     51A : 4EB9 0008 140E                 JSR     CONST
+  201/     520 : 4A00                           TST.B   D0
+  202/     522 : 666E                           BNE     DONE
+  203/     524 :                        
+  204/     524 : 6000 FF14                      BRA     MAIN_LOOP
+  205/     528 :                        
+  206/     528 :                        ;;; -----------------------------------------------------------
+  207/     528 :                        ;;; PRODUCE - Compose next T_k into Z
+  208/     528 :                        ;;;   T_k = ( k, 4*k+2, 0, 2*k+1 )
+  209/     528 :                        ;;;   Z' = Z * T_k  (matrix multiply):
+  210/     528 :                        ;;;     new_q = q * k
+  211/     528 :                        ;;;     new_r = q * (4*k+2) + r * (2*k+1)
+  212/     528 :                        ;;;     new_s = s * k
+  213/     528 :                        ;;;     new_t = s * (4*k+2) + t * (2*k+1)
+  214/     528 :                        ;;; -----------------------------------------------------------
+  215/     528 :                        PRODUCE:
+  216/     528 : 2838 0784                      MOVE.L  KK,D4           ; D4 = k
+  217/     52C :                        
+  218/     52C :                                ;; Compute 2*k+1 and 4*k+2
+  219/     52C : 2A04                           MOVE.L  D4,D5
+  220/     52E : DA85                           ADD.L   D5,D5           ; D5 = 2*k
+  221/     530 : 5285                           ADDQ.L  #1,D5           ; D5 = 2*k + 1
+  222/     532 :                        
+  223/     532 : 2C05                           MOVE.L  D5,D6
+  224/     534 : DC86                           ADD.L   D6,D6           ; D6 = 2*(2*k+1) = 4*k + 2
+  225/     536 :                        
+  226/     536 :                                ;; new_q = q * k
+  227/     536 : 2038 0774                      MOVE.L  ZQ,D0
+  228/     53A : 2204                           MOVE.L  D4,D1
+  229/     53C : 616C                           BSR     MUL32
+  230/     53E : 2F00                           MOVE.L  D0,-(A7)        ; save new_q on stack
+  231/     540 :                        
+  232/     540 :                                ;; new_r = q * (4*k+2) + r * (2*k+1)
+  233/     540 : 2038 0774                      MOVE.L  ZQ,D0
+  234/     544 : 2206                           MOVE.L  D6,D1           ; 4*k+2
+  235/     546 : 6162                           BSR     MUL32
+  236/     548 : 2F00                           MOVE.L  D0,-(A7)        ; save q*(4k+2) on stack
+  237/     54A :                        
+  238/     54A : 2038 0778                      MOVE.L  ZR,D0
+  239/     54E : 2205                           MOVE.L  D5,D1           ; 2*k+1
+  240/     550 : 6158                           BSR     MUL32           ; D0 = r*(2k+1)
+ AS V1.42 Beta [Bld 278] - Source File pi.asm - Page 5 - 5/17/2026 18:55:24
+
+
+  241/     552 : D09F                           ADD.L   (A7)+,D0        ; D0 = q*(4k+2) + r*(2k+1) = new_r
+  242/     554 : 2F00                           MOVE.L  D0,-(A7)        ; save new_r
+  243/     556 :                        
+  244/     556 :                                ;; new_s = s * k
+  245/     556 : 2038 077C                      MOVE.L  ZS,D0
+  246/     55A : 2204                           MOVE.L  D4,D1
+  247/     55C : 614C                           BSR     MUL32
+  248/     55E : 2F00                           MOVE.L  D0,-(A7)        ; save new_s
+  249/     560 :                        
+  250/     560 :                                ;; new_t = s * (4*k+2) + t * (2*k+1)
+  251/     560 : 2038 077C                      MOVE.L  ZS,D0
+  252/     564 : 2206                           MOVE.L  D6,D1           ; 4*k+2
+  253/     566 : 6142                           BSR     MUL32
+  254/     568 : 2F00                           MOVE.L  D0,-(A7)        ; save s*(4k+2)
+  255/     56A :                        
+  256/     56A : 2038 0780                      MOVE.L  ZT,D0
+  257/     56E : 2205                           MOVE.L  D5,D1           ; 2*k+1
+  258/     570 : 6138                           BSR     MUL32           ; D0 = t*(2k+1)
+  259/     572 : D09F                           ADD.L   (A7)+,D0        ; D0 = s*(4k+2) + t*(2k+1) = new_t
+  260/     574 : 21C0 0780                      MOVE.L  D0,ZT
+  261/     578 :                        
+  262/     578 :                                ;; Restore saved values
+  263/     578 : 201F                           MOVE.L  (A7)+,D0        ; new_s
+  264/     57A : 21C0 077C                      MOVE.L  D0,ZS
+  265/     57E : 201F                           MOVE.L  (A7)+,D0        ; new_r
+  266/     580 : 21C0 0778                      MOVE.L  D0,ZR
+  267/     584 : 201F                           MOVE.L  (A7)+,D0        ; new_q
+  268/     586 : 21C0 0774                      MOVE.L  D0,ZQ
+  269/     58A :                        
+  270/     58A :                                ;; k++
+  271/     58A : 52B8 0784                      ADDQ.L  #1,KK
+  272/     58E :                        
+  273/     58E : 6000 FEAA                      BRA     MAIN_LOOP
+  274/     592 :                        
+  275/     592 :                        ;;; -----------------------------------------------------------
+  276/     592 :                        ;;; DONE - Key was pressed, clean up and return to monitor
+  277/     592 :                        ;;; -----------------------------------------------------------
+  278/     592 :                        DONE:
+  279/     592 : 4EB9 0008 13FA                 JSR     CONIN           ; consume the key press
+  280/     598 : 4EB9 0008 0812                 JSR     CRLF
+  281/     59E : 41F8 0701                      LEA     MSG_DONE,A0
+  282/     5A2 : 4EB9 0008 079E                 JSR     STROUT
+  283/     5A8 : 4E75                           RTS
+  284/     5AA :                        
+  285/     5AA :                        ;;; ============================================================
+  286/     5AA :                        ;;; MUL32 - Signed 32-bit x 32-bit -> 32-bit multiply
+  287/     5AA :                        ;;;   Input:  D0.L = multiplicand, D1.L = multiplier
+  288/     5AA :                        ;;;   Output: D0.L = D0 * D1 (low 32 bits)
+  289/     5AA :                        ;;;   Clobbers: D1, D2
+  290/     5AA :                        ;;; ============================================================
+  291/     5AA :                        MUL32:
+  292/     5AA :                                ;; Save sign: result is negative if signs differ
+  293/     5AA : 2400                           MOVE.L  D0,D2
+  294/     5AC : B382                           EOR.L   D1,D2           ; D2 bit 31 = sign of result
+  295/     5AE : 4A80                           TST.L   D0
+  296/     5B0 : 6A02                           BPL.S   .m_apos
+  297/     5B2 : 4480                           NEG.L   D0
+  298/     5B4 :                        .m_apos:
+  299/     5B4 : 4A81                           TST.L   D1
+  300/     5B6 : 6A02                           BPL.S   .m_bpos
+ AS V1.42 Beta [Bld 278] - Source File pi.asm - Page 6 - 5/17/2026 18:55:24
+
+
+  301/     5B8 : 4481                           NEG.L   D1
+  302/     5BA :                        .m_bpos:
+  303/     5BA :                                ;; Now D0, D1 are both >= 0
+  304/     5BA :                                ;; D0 = Ah:Al, D1 = Bh:Bl  (each 16-bit halves)
+  305/     5BA :                                ;; Result low 32 = Al*Bl + (Al*Bh + Ah*Bl) << 16
+  306/     5BA : 48E7 1800                      MOVEM.L D3-D4,-(A7)
+  307/     5BE :                        
+  308/     5BE : 2600                           MOVE.L  D0,D3           ; D3 = A
+  309/     5C0 : 2801                           MOVE.L  D1,D4           ; D4 = B
+  310/     5C2 :                        
+  311/     5C2 :                                ;; Al * Bl  (unsigned 16x16 -> 32)
+  312/     5C2 : 3003                           MOVE.W  D3,D0
+  313/     5C4 : C0C4                           MULU.W  D4,D0           ; D0.L = Al * Bl
+  314/     5C6 :                        
+  315/     5C6 :                                ;; Al * Bh
+  316/     5C6 : 3203                           MOVE.W  D3,D1
+  317/     5C8 : 4844                           SWAP    D4
+  318/     5CA : C2C4                           MULU.W  D4,D1           ; D1.L = Al * Bh
+  319/     5CC : 4841                           SWAP    D1              ; shift left 16 (keep low 16 of result)
+  320/     5CE : 4241                           CLR.W   D1              ; mask upper (only care about low 32 of total)
+  321/     5D0 : D081                           ADD.L   D1,D0
+  322/     5D2 :                        
+  323/     5D2 :                                ;; Ah * Bl
+  324/     5D2 : 4843                           SWAP    D3
+  325/     5D4 : 4844                           SWAP    D4              ; D4 back to original
+  326/     5D6 : 3203                           MOVE.W  D3,D1
+  327/     5D8 : C2C4                           MULU.W  D4,D1           ; D1.L = Ah * Bl
+  328/     5DA : 4841                           SWAP    D1
+  329/     5DC : 4241                           CLR.W   D1
+  330/     5DE : D081                           ADD.L   D1,D0
+  331/     5E0 :                        
+  332/     5E0 : 4CDF 0018                      MOVEM.L (A7)+,D3-D4
+  333/     5E4 :                        
+  334/     5E4 :                                ;; Apply sign
+  335/     5E4 : 4A82                           TST.L   D2
+  336/     5E6 : 6A02                           BPL.S   .m_done
+  337/     5E8 : 4480                           NEG.L   D0
+  338/     5EA :                        .m_done:
+  339/     5EA : 4E75                           RTS
+  340/     5EC :                        
+  341/     5EC :                        ;;; ============================================================
+  342/     5EC :                        ;;; SDIV32 - Signed 32-bit / 32-bit -> 32-bit floor division
+  343/     5EC :                        ;;;   Input:  D0.L = dividend, D1.L = divisor
+  344/     5EC :                        ;;;   Output: D0.L = floor(D0 / D1)
+  345/     5EC :                        ;;;   Clobbers: D1, D2, D3, D4, D5
+  346/     5EC :                        ;;;
+  347/     5EC :                        ;;;   Floor division: rounds toward negative infinity.
+  348/     5EC :                        ;;;   For positive divisor (our case): if dividend < 0 and
+  349/     5EC :                        ;;;   remainder != 0, quotient = -((-dividend)/divisor) - 1
+  350/     5EC :                        ;;; ============================================================
+  351/     5EC :                        SDIV32:
+  352/     5EC : 4A81                           TST.L   D1
+  353/     5EE : 6724                           BEQ.S   .div_zero       ; safety
+  354/     5F0 :                        
+  355/     5F0 :                                ;; Record signs
+  356/     5F0 : 2400                           MOVE.L  D0,D2           ; save dividend
+  357/     5F2 : 2601                           MOVE.L  D1,D3           ; save divisor
+  358/     5F4 :                        
+  359/     5F4 :                                ;; Make both positive
+  360/     5F4 : 4A80                           TST.L   D0
+ AS V1.42 Beta [Bld 278] - Source File pi.asm - Page 7 - 5/17/2026 18:55:24
+
+
+  361/     5F6 : 6A02                           BPL.S   .d_apos
+  362/     5F8 : 4480                           NEG.L   D0
+  363/     5FA :                        .d_apos:
+  364/     5FA : 4A81                           TST.L   D1
+  365/     5FC : 6A02                           BPL.S   .d_bpos
+  366/     5FE : 4481                           NEG.L   D1
+  367/     600 :                        .d_bpos:
+  368/     600 :                                ;; Unsigned division D0 / D1
+  369/     600 : 611A                           BSR     UDIV32          ; D0 = quotient, D1 = remainder
+  370/     602 :                        
+  371/     602 :                                ;; Determine sign of result
+  372/     602 : 2802                           MOVE.L  D2,D4
+  373/     604 : B784                           EOR.L   D3,D4           ; D4 bit 31 = sign of quotient
+  374/     606 :                        
+  375/     606 : 4A84                           TST.L   D4
+  376/     608 : 6A08                           BPL.S   .d_pos_result
+  377/     60A :                        
+  378/     60A :                                ;; Negative result
+  379/     60A : 4480                           NEG.L   D0
+  380/     60C : 4A81                           TST.L   D1              ; remainder?
+  381/     60E : 6702                           BEQ.S   .d_done
+  382/     610 : 5380                           SUBQ.L  #1,D0           ; floor: round toward -inf
+  383/     612 :                        .d_pos_result:
+  384/     612 :                                ;; Positive result - quotient is already correct
+  385/     612 :                        .d_done:
+  386/     612 : 4E75                           RTS
+  387/     614 :                        .div_zero:
+  388/     614 : 203C 0000 0000                 MOVE.L  #0,D0           ; return 0 on divide by zero
+  389/     61A : 4E75                           RTS
+  390/     61C :                        
+  391/     61C :                        ;;; ============================================================
+  392/     61C :                        ;;; UDIV32 - Unsigned 32-bit / 32-bit division
+  393/     61C :                        ;;;   Input:  D0.L = dividend (unsigned), D1.L = divisor (unsigned)
+  394/     61C :                        ;;;   Output: D0.L = quotient, D1.L = remainder
+  395/     61C :                        ;;;   Clobbers: D2, D3, D4, D5
+  396/     61C :                        ;;; ============================================================
+  397/     61C :                        UDIV32:
+  398/     61C : 4A81                           TST.L   D1
+  399/     61E : 672A                           BEQ.S   .udiv_zero
+  400/     620 :                        
+  401/     620 :                                ;; Try fast path: if dividend fits in 16 bits or using DIVU
+  402/     620 :                                ;; For general case, use shift-and-subtract algorithm
+  403/     620 :                        
+  404/     620 : 48E7 0300                      MOVEM.L D6-D7,-(A7)
+  405/     624 :                        
+  406/     624 : 2C00                           MOVE.L  D0,D6           ; D6 = dividend
+  407/     626 : 2E01                           MOVE.L  D1,D7           ; D7 = divisor
+  408/     628 : 4280                           CLR.L   D0              ; D0 = quotient
+  409/     62A : 4281                           CLR.L   D1              ; D1 = remainder
+  410/     62C :                        
+  411/     62C : 7A1F                           MOVEQ   #31,D5          ; bit counter
+  412/     62E :                        
+  413/     62E :                        .udiv_loop:
+  414/     62E :                                ;; Shift dividend left, top bit into remainder
+  415/     62E : E38E                           LSL.L   #1,D6           ; shift dividend left, top bit -> X
+  416/     630 : E391                           ROXL.L  #1,D1           ; shift X into remainder
+  417/     632 :                        
+  418/     632 :                                ;; Try subtract
+  419/     632 : B287                           CMP.L   D7,D1
+  420/     634 : 6504                           BCS.S   .udiv_skip      ; remainder < divisor, skip
+ AS V1.42 Beta [Bld 278] - Source File pi.asm - Page 8 - 5/17/2026 18:55:24
+
+
+  421/     636 :                        
+  422/     636 : 9287                           SUB.L   D7,D1           ; remainder -= divisor
+  423/     638 : 5280                           ADDQ.L  #1,D0           ; set bit in quotient
+  424/     63A :                        .udiv_skip:
+  425/     63A :                                ;; Shift quotient left for next iteration (except last)
+  426/     63A : 4A45                           TST.W   D5
+  427/     63C : 6706                           BEQ.S   .udiv_end
+  428/     63E : E388                           LSL.L   #1,D0
+  429/     640 :                        
+  430/     640 : 51CD FFEC                      DBF     D5,.udiv_loop
+  431/     644 :                        
+  432/     644 :                        .udiv_end:
+  433/     644 : 4CDF 00C0                      MOVEM.L (A7)+,D6-D7
+  434/     648 : 4E75                           RTS
+  435/     64A :                        
+  436/     64A :                        .udiv_zero:
+  437/     64A : 4280                           CLR.L   D0
+  438/     64C : 4281                           CLR.L   D1
+  439/     64E : 4E75                           RTS
+  440/     650 :                        
+  441/     650 :                        ;;; -----------------------------------------------------------
+  442/     650 :                        ;;; Data - Messages
+  443/     650 :                        ;;; -----------------------------------------------------------
+  444/     650 :                        
+  445/     650 :                        MSG_HDR:
+  446/     650 : 0D0A                           DC.B    $0D,$0A
+  447/     652 : 3D3D 3D3D 3D3D 3D3D            DC.B    "================================================",$0D,$0A
+           65A : 3D3D 3D3D 3D3D 3D3D
+           662 : 3D3D 3D3D 3D3D 3D3D
+           66A : 3D3D 3D3D 3D3D 3D3D
+           672 : 3D3D 3D3D 3D3D 3D3D
+           67A : 3D3D 3D3D 3D3D 3D3D
+           682 : 0D0A                  
+  448/     684 : 2050 6920 4469 6769            DC.B    " Pi Digit Generator  (68000 Spigot Algorithm)",$0D,$0A
+           68C : 7420 4765 6E65 7261
+           694 : 746F 7220 2028 3638
+           69C : 3030 3020 5370 6967
+           6A4 : 6F74 2041 6C67 6F72
+           6AC : 6974 686D 290D 0A   
+  449/     6B3 : 2050 7265 7373 2061            DC.B    " Press any key to stop.",$0D,$0A
+           6BB : 6E79 206B 6579 2074
+           6C3 : 6F20 7374 6F70 2E0D 0A
+  450/     6CC : 3D3D 3D3D 3D3D 3D3D            DC.B    "================================================",$0D,$0A
+           6D4 : 3D3D 3D3D 3D3D 3D3D
+           6DC : 3D3D 3D3D 3D3D 3D3D
+           6E4 : 3D3D 3D3D 3D3D 3D3D
+           6EC : 3D3D 3D3D 3D3D 3D3D
+           6F4 : 3D3D 3D3D 3D3D 3D3D
+           6FC : 0D0A                  
+  451/     6FE : 0D0A 00                        DC.B    $0D,$0A,$00
+  452/     701 :                        
+  453/     701 :                        MSG_DONE:
+  454/     701 : 0D0A                           DC.B    $0D,$0A
+  455/     703 : 3D3D 3D3D 3D3D 3D3D            DC.B    "================================================",$0D,$0A
+           70B : 3D3D 3D3D 3D3D 3D3D
+           713 : 3D3D 3D3D 3D3D 3D3D
+           71B : 3D3D 3D3D 3D3D 3D3D
+           723 : 3D3D 3D3D 3D3D 3D3D
+           72B : 3D3D 3D3D 3D3D 3D3D
+           733 : 0D0A                  
+ AS V1.42 Beta [Bld 278] - Source File pi.asm - Page 9 - 5/17/2026 18:55:24
+
+
+  456/     735 : 2053 746F 7070 6564            DC.B    " Stopped.",$0D,$0A
+           73D : 2E0D 0A               
+  457/     740 : 3D3D 3D3D 3D3D 3D3D            DC.B    "================================================",$0D,$0A
+           748 : 3D3D 3D3D 3D3D 3D3D
+           750 : 3D3D 3D3D 3D3D 3D3D
+           758 : 3D3D 3D3D 3D3D 3D3D
+           760 : 3D3D 3D3D 3D3D 3D3D
+           768 : 3D3D 3D3D 3D3D 3D3D
+           770 : 0D0A                  
+  458/     772 : 00                             DC.B    $00
+  459/     773 :                        
+  460/     773 :                                ALIGN   2
+  461/     774 :                        
+  462/     774 :                        ;;; -----------------------------------------------------------
+  463/     774 :                        ;;; Variables (in RAM after code)
+  464/     774 :                        ;;; -----------------------------------------------------------
+  465/     774 :                        ZQ:     DS.L    1               ; LFT matrix element q
+  466/     778 :                        ZR:     DS.L    1               ; LFT matrix element r
+  467/     77C :                        ZS:     DS.L    1               ; LFT matrix element s
+  468/     780 :                        ZT:     DS.L    1               ; LFT matrix element t
+  469/     784 :                        KK:     DS.L    1               ; continued fraction index k
+  470/     788 :                        DCNT:   DS.L    1               ; total digits output
+  471/     78C :                        LCNT:   DS.L    1               ; digits on current line
+  472/     790 :                        
+  473/     790 :                                END     START
+ AS V1.42 Beta [Bld 278] - Source File pi.asm - Page 10 - 5/17/2026 18:55:24
+
+
+  Symbol Table (* = unused):
+  --------------------------
+
+*ARCHITECTURE :                                        "i386-unknown-win32" - |
+*CASESENSITIVE :                  0 - |  CONIN :                      813FA - |
+ CONOUT :                     8141A - |  CONST :                      8140E - |
+*CONSTPI :        3.141592653589793 - |  CRLF :                       80812 - |
+*DATE :                 "5/17/2026" - |  DCNT :                         788 C |
+ DIGITS_PER_GRP :                 A - |  DIGITS_PER_LINE :               40 - |
+ DONE :                         592 C | *FALSE :                          0 - |
+*FLOATMAX :      1.797693134866E308 - | *FULLPMMU :                       1 - |
+*HAS64 :                          1 - | *HASFPU :                         0 - |
+*HASPMMU :                        0 - | *INSUPMODE :                      1 - |
+ KK :                           784 C |  LCNT :                         78C C |
+*LISTON :                         1 - | *MACEXP :                         7 - |
+ MAIN_LOOP :                    43A C | *MOMCPU :                     68000 - |
+*MOMCPUNAME :               "68000" - |  MSG_DONE :                     701 C |
+ MSG_HDR :                      650 C |  MUL32 :                        5AA C |
+ MUL32.M_APOS :                 5B4 C |  MUL32.M_BPOS :                 5BA C |
+ MUL32.M_DONE :                 5EA C | *NESTMAX :                      100 - |
+*OUTPUT_DIGIT :                 47E C |  OUTPUT_DIGIT.CHECK_LINE :      4C2 C |
+ OUTPUT_DIGIT.CONSUME :         4DA C |  OUTPUT_DIGIT.NO_POINT :        4A8 C |
+*PADDING :                        1 - |  PRODUCE :                      528 C |
+*RELAXED :                        0 - |  SDIV32 :                       5EC C |
+ SDIV32.DIV_ZERO :              614 C |  SDIV32.D_APOS :                5FA C |
+ SDIV32.D_BPOS :                600 C |  SDIV32.D_DONE :                612 C |
+ SDIV32.D_POS_RESULT :          612 C |  START :                        400 C |
+ STROUT :                     8079E - | *TIME :                  "18:55:24" - |
+*TRUE :                           1 - |  UDIV32 :                       61C C |
+ UDIV32.UDIV_END :              644 C |  UDIV32.UDIV_LOOP :             62E C |
+ UDIV32.UDIV_SKIP :             63A C |  UDIV32.UDIV_ZERO :             64A C |
+*VERSION :                     142F - |  ZQ :                           774 C |
+ ZR :                           778 C |  ZS :                           77C C |
+ ZT :                           780 C |
+
+     60 symbols
+     22 unused symbols
+
+ AS V1.42 Beta [Bld 278] - Source File pi.asm - Page 11 - 5/17/2026 18:55:24
+
+
+  Code Pages:
+  ----------
+
+STANDARD (0 changed characters)
+
+1 code page
+
+0.05 seconds assembly time
+
+    474 lines source file
+      3 passes
+      0 errors
+      0 warnings
